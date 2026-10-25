@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hitster</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #000; color: #fff;
+    font-family: system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #btn { width: 60vmin; height: 60vmin; border-radius: 50%; border: 4px solid #fff;
+    background: transparent; color: #fff; font-size: 12vmin; cursor: pointer; }
+  #btn:disabled { opacity: .3; }
+  #msg { margin-top: 24px; font-size: 14px; opacity: .6; text-align: center; padding: 0 16px; }
+  /* Spotify-Player bleibt unsichtbar, damit Titel und Cover nicht zu sehen sind */
+  #wrap { position: fixed; left: 0; bottom: 0; width: 300px; height: 80px;
+    opacity: 0; pointer-events: none; }
+  #wrap.show { opacity: 1; pointer-events: auto; background: #000; }
+  a { color: #fff; }
+</style>
+</head>
+<body>
+  <button id="btn" disabled>▶</button>
+  <div id="msg">Lade …</div>
+  <div id="wrap"><div id="embed"></div></div>
+
+<script>
+  // Track-ID aus der URL lesen: ?t=spotify:track:XXXX oder ?t=XXXX
+  const raw = new URLSearchParams(location.search).get('t') || '';
+  const id = raw.replace('spotify:track:', '').split('?')[0].trim();
+
+  const btn = document.getElementById('btn');
+  const msg = document.getElementById('msg');
+  let controller = null;
+  let playing = false;
+
+  if (!id) {
+    msg.textContent = 'Kein Song im Link gefunden.';
+  }
+
+  function showPlayer() {
+    document.getElementById('wrap').classList.add('show');
+  }
+
+  window.onSpotifyIframeApiReady = (IFrameAPI) => {
+    if (!id) return;
+    IFrameAPI.createController(
+      document.getElementById('embed'),
+      { uri: 'spotify:track:' + id, width: 300, height: 80 },
+      (ctrl) => {
+        controller = ctrl;
+        btn.disabled = false;
+        msg.innerHTML = 'Tippe zum Abspielen/Pausieren.<br><a href="#" id="fallback">Falls nichts passiert: Player einblenden</a>';
+        document.getElementById('fallback').onclick = (e) => { e.preventDefault(); showPlayer(); };
+        ctrl.addListener('playback_update', (e) => {
+          playing = !e.data.isPaused;
+          btn.textContent = playing ? '❚❚' : '▶';
+        });
+      }
+    );
+  };
+
+  btn.addEventListener('click', () => { if (controller) controller.togglePlay(); });
+</script>
+<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
+</body>
+</html>
