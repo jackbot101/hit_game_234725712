@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hitster</title>
+<style>
+:root{--bg:#17444d;--c:#fbeee0;--a:#f08a6e;--ok:#4caf7a;--bad:#e5484d}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--c);font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;padding:16px;gap:14px}
+button{font:inherit;border:0;border-radius:12px;padding:12px 20px;background:var(--a);color:#222;font-weight:700;cursor:pointer}
+button:disabled{opacity:.4}
+textarea,input,select{font:inherit;padding:8px;border-radius:8px;border:0;width:100%;margin-top:4px}
+.box{max-width:420px;width:100%;display:flex;flex-direction:column;gap:10px}
+#game{max-width:900px;align-items:center;text-align:center}
+#tl{display:flex;align-items:center;gap:8px;overflow-x:auto;width:100%;padding:12px 4px;min-height:180px}
+.card{flex:0 0 120px;height:150px;background:var(--c);color:#222;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px;gap:4px;font-size:13px}
+.card b{font-size:28px;color:var(--bg)}
+.card i{opacity:.7}
+.slot{flex:0 0 44px;height:90px;padding:0;background:transparent;border:2px dashed var(--a);color:var(--a);font-size:24px}
+.new{animation:pop .7s}
+.ok{outline:4px solid var(--ok)}
+.bad{outline:4px solid var(--bad);animation:pop .7s,shake .5s .7s}
+.gone{transition:all .6s;opacity:0;transform:scale(.3) translateY(60px)}
+@keyframes pop{from{transform:scale(.3) rotateY(90deg);opacity:0}to{transform:none;opacity:1}}
+@keyframes shake{25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
+#play{width:100px;height:100px;border-radius:50%;font-size:36px}
+#wrap{position:fixed;left:0;bottom:0;width:300px;height:80px;opacity:0;pointer-events:none}
+.hide{display:none!important}
+h1,h2{margin:0}
+</style>
+</head>
+<body>
+<div id="setup" class="box">
+  <h1>🎵 Hitster</h1>
+  <label>Modus
+    <select id="mode"><option value="multi">Mehrspieler (Zeitleiste)</option><option value="solo">Solo (Punkte)</option></select></label>
+  <label id="pl">Spieler (einer pro Zeile)<textarea id="names" rows="3">Spieler 1
+Spieler 2</textarea></label>
+  <label id="gl">Karten zum Sieg<input id="goal" type="number" value="10" min="3"></label>
+  <div id="load" class="hide">songs.json nicht gefunden – bitte Datei wählen:<input type="file" id="file" accept=".json"></div>
+  <button id="go" disabled>Los geht's</button>
+</div>
+
+<div id="game" class="box hide">
+  <div id="info"></div>
+  <div id="tl"></div>
+  <div id="msg"></div>
+  <button id="play" class="hide">▶</button>
+  <button id="main"></button>
+</div>
+<div id="wrap"><div id="embed"></div></div>
+
+<script>
+let songs = [], ctrl = null, apiReady = null, G;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dec = s => Math.floor(s.year / 10);
+
+function setSongs(d) { songs = d; $('load').classList.add('hide'); $('go').disabled = false; }
+fetch('songs.json').then(r => r.json()).then(setSongs).catch(() => $('load').classList.remove('hide'));
+$('file').onchange = e => e.target.files[0].text().then(t => setSongs(JSON.parse(t)));
+$('mode').onchange = () => {
+  const solo = $('mode').value === 'solo';
+  $('pl').classList.toggle('hide', solo); $('gl').classList.toggle('hide', solo);
+};
+window.onSpotifyIframeApiReady = api => { apiReady = api; };
+
+function play(uri) {
+  if (ctrl) { ctrl.loadUri(uri); ctrl.play(); return; }
+  apiReady.createController($('embed'), { uri, width: 300, height: 80 }, c => {
+    ctrl = c;
+    c.addListener('playback_update', e => { $('play').textContent = e.data.isPaused ? '▶' : '❚❚'; });
+    c.play();
+  });
+}
+
+// Song-Auswahl: unbenutzt, bevorzugt Jahre, die noch in keiner Zeitleiste liegen,
+// und gewichtet gegen Jahrzehnte, die schon oft dran waren.
+function pick() {
+  let pool = songs.filter(s => !G.used.has(s.id));
+  if (!pool.length) { G.used.clear(); pool = songs.slice(); }
+  const have = new Set(G.ps.flatMap(p => p.tl.map(s => s.year)));
+  const fresh = pool.filter(s => !have.has(s.year));
+  if (fresh.length) pool = fresh;
+  const cnt = {};
+  songs.forEach(s => { if (G.used.has(s.id)) cnt[dec(s)] = (cnt[dec(s)] || 0) + 1; });
+  const w = pool.map(s => 1 / (1 + (cnt[dec(s)] || 0)));
+  let r = Math.random() * w.reduce((a, b) => a + b, 0), i = 0;
+  while (i < pool.length - 1 && (r -= w[i]) > 0) i++;
+  G.used.add(pool[i].id);
+  return pool[i];
+}
+
+$('go').onclick = () => {
+  const solo = $('mode').value === 'solo';
+  const names = solo ? ['Du'] : $('names').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!names.length) return;
+  G = { solo, goal: +$('goal').value || 10, cur: 0, used: new Set(), round: 0, rounds: 15, st: 'ready',
+        ps: names.map(n => ({ n, tl: [], pts: 0, streak: 0 })) };
+  G.ps.forEach(p => p.tl.push(pick()));
+  $('setup').classList.add('hide'); $('game').classList.remove('hide');
+  render();
+};
+
+const cardHTML = (s, cls = '') =>
+  `<div class="card ${cls}"><b>${s.year}</b><span>${esc(s.title)}</span><i>${esc(s.artist)}</i></div>`;
+
+function render() {
+  const p = G.ps[G.cur], rev = G.st === 'reveal' ? G.rev : null;
+  $('info').innerHTML = G.solo
+    ? `<h2>Runde ${G.round + 1}/${G.rounds} · ${p.pts} Punkte · Serie ${p.streak}</h2>`
+    : `<h2>${esc(p.n)} ist dran</h2><small>${G.ps.map(q => `${esc(q.n)}: ${q.tl.length}/${G.goal}`).join(' · ')}</small>`;
+  let h = '';
+  for (let i = 0; i <= p.tl.length; i++) {
+    if (G.st === 'place') h += `<button class="slot" data-i="${i}">+</button>`;
+    if (rev && rev.idx === i) h += cardHTML(G.song, 'new ' + (rev.ok ? 'ok' : 'bad'));
+    if (i < p.tl.length) h += cardHTML(p.tl[i]);
+  }
+  $('tl').innerHTML = h;
+  $('play').classList.toggle('hide', G.st !== 'place' && G.st !== 'reveal');
+  const m = $('main');
+  m.classList.toggle('hide', G.st === 'place');
+  m.textContent = G.st === 'ready' ? '▶ Song starten' : 'Weiter';
+  $('msg').textContent = G.st === 'ready' ? 'Bereit? Dann Song starten.'
+    : G.st === 'place' ? 'Wo gehört der Song hin? Tippe auf ein +  (kein Ton? ▶ drücken)'
+    : (rev.ok ? '✅ Richtig! ' : '❌ Falsch. ') + `${G.song.artist} – ${G.song.title} (${G.song.year})`;
+  const n = document.querySelector('.new');
+  if (n) {
+    n.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    if (!rev.ok) setTimeout(() => n.classList.add('gone'), 2000);
+  }
+}
+
+$('tl').onclick = e => {
+  const b = e.target.closest('.slot');
+  if (!b || G.st !== 'place') return;
+  const idx = +b.dataset.i, p = G.ps[G.cur], t = p.tl, y = G.song.year;
+  const ok = (idx === 0 || t[idx - 1].year <= y) && (idx === t.length || y <= t[idx].year);
+  if (G.solo) { if (ok) { p.pts += 100 + 25 * p.streak; p.streak++; } else p.streak = 0; }
+  G.rev = { idx, ok }; G.st = 'reveal'; render();
+};
+
+$('play').onclick = () => ctrl && ctrl.togglePlay();
+
+function end(txt) {
+  $('game').innerHTML = `<h1>🏆 ${txt}</h1><button onclick="location.reload()">Nochmal spielen</button>`;
+}
+
+$('main').onclick = () => {
+  if (G.st === 'ready') {
+    if (!ctrl && !apiReady) { $('msg').textContent = 'Spotify lädt noch – gleich nochmal tippen.'; return; }
+    G.song = pick(); play('spotify:track:' + G.song.id); G.st = 'place'; render();
+  } else if (G.st === 'reveal') {
+    const p = G.ps[G.cur];
+    if (ctrl) ctrl.pause();
+    if (G.rev.ok) p.tl.splice(G.rev.idx, 0, G.song);
+    if (G.solo) {
+      if (++G.round >= G.rounds) return end(`${p.pts} Punkte`);
+    } else {
+      if (G.rev.ok && p.tl.length >= G.goal) return end(`${esc(p.n)} gewinnt!`);
+      G.cur = (G.cur + 1) % G.ps.length;
+    }
+    G.st = 'ready'; render();
+  }
+};
+</script>
+<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
+</body>
+</html>
