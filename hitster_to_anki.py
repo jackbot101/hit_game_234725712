@@ -2,13 +2,14 @@
 """Exportify-CSV -> hitster.apkg (Anki) + songs.json (Web-App).
 
 Aufruf:  python hitster_to_anki.py playlist.csv --base-url https://DEINNAME.github.io/hitster/
+Aufruf mit Pflichtangabe:  --contact deine@mail.de
 Optional: --offline  (kein MusicBrainz, Jahr = Album-Datum von Spotify)
 Benötigt: pip install genanki
 """
-import argparse, csv, json, os, re, time, urllib.parse, urllib.request
+import argparse, csv, json, os, re, time, urllib.error, urllib.parse, urllib.request
 import genanki
 
-UA = "HitsterDeckBuilder/1.0 (privat)"
+UA = "HitsterDeckBuilder/1.0"
 
 def clean_title(t):
     t = re.sub(r"\s*[-–]\s*(\d{4}\s+)?(Re-?master(ed)?|Single Version|Mono|Stereo)\b.*$", "", t, flags=re.I)
@@ -16,23 +17,38 @@ def clean_title(t):
     return t.strip()
 
 def mb_year(isrc, cache):
-    """Frühestes Veröffentlichungsjahr laut MusicBrainz (per ISRC)."""
+    """Frühestes Veröffentlichungsjahr laut MusicBrainz (per ISRC).
+    Bei 503/429 wird mit wachsender Wartezeit wiederholt. Fehlschläge werden
+    nicht gespeichert und beim nächsten Lauf erneut versucht."""
     if not isrc:
         return None
     if isrc in cache:
         return cache[isrc]
     url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=25&query=" + urllib.parse.quote("isrc:" + isrc)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
-        data = json.load(urllib.request.urlopen(req, timeout=20))
-        years = [int(r["first-release-date"][:4]) for r in data.get("recordings", [])
-                 if r.get("first-release-date")]
-        cache[isrc] = min(years) if years else None
-    except Exception as e:
-        print("   MusicBrainz-Fehler:", e)
-        return None
-    time.sleep(1.1)  # Limit: 1 Anfrage pro Sekunde
-    return cache[isrc]
+    for attempt in range(6):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            data = json.load(urllib.request.urlopen(req, timeout=30))
+            years = [int(r["first-release-date"][:4]) for r in data.get("recordings", [])
+                     if r.get("first-release-date")]
+            cache[isrc] = min(years) if years else None
+            time.sleep(1.5)
+            return cache[isrc]
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503):
+                wait = int(e.headers.get("Retry-After") or 0) or 5 * 2 ** attempt
+                print(f"   MusicBrainz ausgelastet ({e.code}), warte {wait}s ...")
+                time.sleep(wait)
+            else:
+                print("   MusicBrainz-Fehler:", e)
+                return None
+        except Exception as e:
+            print("   Netzwerkfehler:", e)
+            time.sleep(5)
+    FAILED.append(isrc)
+    return None
+
+FAILED = []
 
 class HitNote(genanki.Note):
     @property
@@ -44,7 +60,10 @@ def main():
     ap.add_argument("csv")
     ap.add_argument("--base-url", required=True, help="z. B. https://name.github.io/hitster/")
     ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--contact", required=True, help="deine E-Mail, verlangt von MusicBrainz")
     a = ap.parse_args()
+    global UA
+    UA = f"HitsterDeckBuilder/1.0 ( {a.contact} )"
     base = a.base_url.rstrip("/") + "/"
 
     cache_file = "mb_cache.json"
@@ -80,12 +99,16 @@ def main():
             else:
                 print(f"[{n}/{len(rows)}] {title}: {year}")
             json.dump(cache, open(cache_file, "w"))
-        songs.append({"id": tid, "title": title, "artist": artist, "year": year})
+        genres = [g.strip().lower() for g in r.get("Genres", "").split(",") if g.strip()][:4]
+        songs.append({"id": tid, "title": title, "artist": artist, "year": year, "genres": genres})
         deck.add_note(HitNote(model=model, fields=[tid, artist, title, str(year)]))
 
     genanki.Package(deck).write_to_file("hitster.apkg")
     json.dump(songs, open("songs.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"\nFertig: {len(songs)} Songs -> hitster.apkg und songs.json")
+    if FAILED:
+        print(f"{len(FAILED)} Songs konnten nicht abgefragt werden (Albumjahr verwendet). "
+              "Starte das Skript später erneut: bereits gefundene Jahre kommen aus dem Cache.")
 
 if __name__ == "__main__":
     main()
