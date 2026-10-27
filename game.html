@@ -44,6 +44,7 @@ h1,h2{margin:0}
 Spieler 2</textarea></label>
   <label id="gl">Karten zum Sieg<input id="goal" type="number" value="10" min="3"></label>
   <div id="load" class="hide">songs.json nicht gefunden – bitte Datei wählen:<input type="file" id="file" accept=".json"></div>
+  <button id="sc" class="sec" type="button"></button>
   <button class="pl sec" type="button">🔑 Spotify-Player ein-/ausblenden (zum Einloggen)</button>
   <button id="go" disabled>Los geht's</button>
 </div>
@@ -60,6 +61,7 @@ Spieler 2</textarea></label>
 </div>
 <div id="wrap"><div id="embed"></div></div>
 
+<script src="spotify-connect.js"></script>
 <script>
 let songs = [], ctrl = null, apiReady = null, G;
 const $ = id => document.getElementById(id);
@@ -75,6 +77,22 @@ $('mode').onchange = () => {
 };
 window.onSpotifyIframeApiReady = api => { apiReady = api; };
 
+function updSC() {
+  const b = $('sc');
+  if (!SC.configured()) { b.classList.add('hide'); return; }
+  b.textContent = SC.on() ? '✓ Mit Spotify verbunden (App wird ferngesteuert)' : '🔗 Mit Spotify verbinden (volle Songs, empfohlen)';
+  b.onclick = SC.on() ? null : SC.login;
+}
+SC.init().then(updSC);
+function startSong(id) {
+  if (SC.on()) {
+    $('play').textContent = '❚❚';
+    SC.play(id).then(r => { if (r !== 'ok') $('msg').textContent = r === 'nodev'
+      ? 'Kein Spotify-Gerät gefunden: Öffne die Spotify-App und starte dort kurz einen Song.' : 'Spotify-Fehler: ' + r; });
+  } else ensure('spotify:track:' + id, true);
+}
+const pauseSong = () => SC.on() ? SC.pause() : ctrl && ctrl.pause();
+const toggleSong = () => SC.on() ? SC.toggle().then(p => { $('play').textContent = p ? '❚❚' : '▶'; }) : ctrl && ctrl.togglePlay();
 let making = false;
 function ensure(uri, auto) {
   if (ctrl) { if (auto) { ctrl.loadUri(uri); ctrl.play(); } return; }
@@ -181,7 +199,7 @@ $('tl').onclick = e => {
   G.rev = { idx, ok }; G.st = 'reveal'; render();
 };
 
-$('play').onclick = () => ctrl && ctrl.togglePlay();
+$('play').onclick = toggleSong;
 
 $('buy').onclick = () => {
   const p = G.ps[G.cur]; p.tok -= 3;
@@ -197,11 +215,11 @@ function end(txt) {
 
 $('main').onclick = () => {
   if (G.st === 'ready') {
-    if (!ctrl && !apiReady) { $('msg').textContent = 'Spotify lädt noch – gleich nochmal tippen.'; return; }
-    G.song = pick(); $('ga').value = $('gt').value = ''; ensure('spotify:track:' + G.song.id, true); G.st = 'place'; render();
+    if (!SC.on() && !ctrl && !apiReady) { $('msg').textContent = 'Spotify lädt noch – gleich nochmal tippen.'; return; }
+    G.song = pick(); $('ga').value = $('gt').value = ''; startSong(G.song.id); G.st = 'place'; render();
   } else if (G.st === 'reveal') {
     const p = G.ps[G.cur];
-    if (ctrl) ctrl.pause();
+    pauseSong();
     const ja = $('ja').checked, jt = $('jt').checked;
     if (G.solo) p.pts += (ja ? 25 : 0) + (jt ? 25 : 0); else if (ja && jt) p.tok++;
     if (G.rev.ok) p.tl.splice(G.rev.idx, 0, G.song);
