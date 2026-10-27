@@ -26,6 +26,11 @@ textarea,input,select{font:inherit;padding:8px;border-radius:8px;border:0;width:
 @keyframes shake{25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
 #play{width:100px;height:100px;border-radius:50%;font-size:36px}
 #wrap{position:fixed;left:0;bottom:0;width:300px;height:80px;opacity:0;pointer-events:none}
+.sec{background:transparent;border:2px solid var(--a);color:var(--a)}
+#wrap.show{opacity:1;pointer-events:auto;z-index:9;background:#000}
+#guess{display:flex;gap:8px;width:100%;max-width:520px}
+#judge{display:flex;flex-direction:column;gap:6px;align-items:center}
+input[type=checkbox]{width:auto;margin-right:6px}
 .hide{display:none!important}
 h1,h2{margin:0}
 </style>
@@ -39,6 +44,7 @@ h1,h2{margin:0}
 Spieler 2</textarea></label>
   <label id="gl">Karten zum Sieg<input id="goal" type="number" value="10" min="3"></label>
   <div id="load" class="hide">songs.json nicht gefunden – bitte Datei wählen:<input type="file" id="file" accept=".json"></div>
+  <button class="pl sec" type="button">🔑 Spotify-Player ein-/ausblenden (zum Einloggen)</button>
   <button id="go" disabled>Los geht's</button>
 </div>
 
@@ -46,8 +52,11 @@ Spieler 2</textarea></label>
   <div id="info"></div>
   <div id="tl"></div>
   <div id="msg"></div>
+  <div id="guess" class="hide"><input id="ga" placeholder="Interpret (optional)"><input id="gt" placeholder="Titel (optional)"></div>
+  <div id="judge" class="hide"></div>
   <button id="play" class="hide">▶</button>
   <button id="main"></button>
+  <button id="buy" class="sec hide">🎟️ 3 Token → Gratis-Karte</button>
 </div>
 <div id="wrap"><div id="embed"></div></div>
 
@@ -66,14 +75,34 @@ $('mode').onchange = () => {
 };
 window.onSpotifyIframeApiReady = api => { apiReady = api; };
 
-function play(uri) {
-  if (ctrl) { ctrl.loadUri(uri); ctrl.play(); return; }
+let making = false;
+function ensure(uri, auto) {
+  if (ctrl) { if (auto) { ctrl.loadUri(uri); ctrl.play(); } return; }
+  if (!apiReady || making) return;
+  making = true;
   apiReady.createController($('embed'), { uri, width: 300, height: 80 }, c => {
     ctrl = c;
     c.addListener('playback_update', e => { $('play').textContent = e.data.isPaused ? '▶' : '❚❚'; });
-    c.play();
+    if (auto) c.play();
   });
 }
+document.querySelectorAll('.pl').forEach(b => b.onclick = () => {
+  if (!ctrl && songs.length) ensure('spotify:track:' + songs[0].id, false);
+  $('wrap').classList.toggle('show');
+});
+
+// Tippfehler-tolerante Prüfung
+const norm = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/\(.*?\)|\[.*?\]/g, '').replace(/\b(feat|ft)\b.*$/, '').replace(/&/g, 'and')
+  .replace(/^the /, '').replace(/[^a-z0-9]+/g, '');
+function lev(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+const close = (g, c) => { g = norm(g); c = norm(c); return !!g && !!c && lev(g, c) <= Math.floor(c.length / 5); };
 
 // Song-Auswahl: unbenutzt, bevorzugt Jahre, die noch in keiner Zeitleiste liegen,
 // und gewichtet gegen Jahrzehnte, die schon oft dran waren.
@@ -97,7 +126,7 @@ $('go').onclick = () => {
   const names = solo ? ['Du'] : $('names').value.split('\n').map(s => s.trim()).filter(Boolean);
   if (!names.length) return;
   G = { solo, goal: +$('goal').value || 10, cur: 0, used: new Set(), round: 0, rounds: 15, st: 'ready',
-        ps: names.map(n => ({ n, tl: [], pts: 0, streak: 0 })) };
+        ps: names.map(n => ({ n, tl: [], pts: 0, streak: 0, tok: 0 })) };
   G.ps.forEach(p => p.tl.push(pick()));
   $('setup').classList.add('hide'); $('game').classList.remove('hide');
   render();
@@ -110,7 +139,7 @@ function render() {
   const p = G.ps[G.cur], rev = G.st === 'reveal' ? G.rev : null;
   $('info').innerHTML = G.solo
     ? `<h2>Runde ${G.round + 1}/${G.rounds} · ${p.pts} Punkte · Serie ${p.streak}</h2>`
-    : `<h2>${esc(p.n)} ist dran</h2><small>${G.ps.map(q => `${esc(q.n)}: ${q.tl.length}/${G.goal}`).join(' · ')}</small>`;
+    : `<h2>${esc(p.n)} ist dran</h2><small>${G.ps.map(q => `${esc(q.n)}: ${q.tl.length}/${G.goal} 🎟️${q.tok}`).join(' · ')}</small>`;
   let h = '';
   for (let i = 0; i <= p.tl.length; i++) {
     if (G.st === 'place') h += `<button class="slot" data-i="${i}">+</button>`;
@@ -123,8 +152,16 @@ function render() {
   m.classList.toggle('hide', G.st === 'place');
   m.textContent = G.st === 'ready' ? '▶ Song starten' : 'Weiter';
   $('msg').textContent = G.st === 'ready' ? 'Bereit? Dann Song starten.'
-    : G.st === 'place' ? 'Wo gehört der Song hin? Tippe auf ein +  (kein Ton? ▶ drücken)'
+    : G.st === 'place' ? 'Wo gehört der Song hin? Optional Interpret/Titel eintippen, dann auf ein + tippen. (Kein Ton? ▶ drücken)'
     : (rev.ok ? '✅ Richtig! ' : '❌ Falsch. ') + `${G.song.artist} – ${G.song.title} (${G.song.year})`;
+  $('guess').classList.toggle('hide', G.st !== 'place');
+  $('judge').classList.toggle('hide', G.st !== 'reveal');
+  $('buy').classList.toggle('hide', !(G.st === 'ready' && !G.solo && p.tok >= 3));
+  if (rev) $('judge').innerHTML =
+    `<div>Deine Eingabe: <b>${esc(G.guess.a) || '–'}</b> / <b>${esc(G.guess.t) || '–'}</b></div>` +
+    `<div>Richtig wäre: <b>${esc(G.song.artist)}</b> / <b>${esc(G.song.title)}</b></div>` +
+    `<label><input type="checkbox" id="ja" ${G.auto.a ? 'checked' : ''}>Interpret richtig</label>` +
+    `<label><input type="checkbox" id="jt" ${G.auto.t ? 'checked' : ''}>Titel richtig</label>`;
   const n = document.querySelector('.new');
   if (n) {
     n.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
@@ -138,10 +175,21 @@ $('tl').onclick = e => {
   const idx = +b.dataset.i, p = G.ps[G.cur], t = p.tl, y = G.song.year;
   const ok = (idx === 0 || t[idx - 1].year <= y) && (idx === t.length || y <= t[idx].year);
   if (G.solo) { if (ok) { p.pts += 100 + 25 * p.streak; p.streak++; } else p.streak = 0; }
+  G.guess = { a: $('ga').value.trim(), t: $('gt').value.trim() };
+  G.auto = { a: [G.song.artist, ...G.song.artist.split(', ')].some(c => close(G.guess.a, c)),
+             t: close(G.guess.t, G.song.title) };
   G.rev = { idx, ok }; G.st = 'reveal'; render();
 };
 
 $('play').onclick = () => ctrl && ctrl.togglePlay();
+
+$('buy').onclick = () => {
+  const p = G.ps[G.cur]; p.tok -= 3;
+  const s = pick(), i = p.tl.findIndex(x => x.year > s.year);
+  p.tl.splice(i < 0 ? p.tl.length : i, 0, s);
+  if (p.tl.length >= G.goal) return end(`${esc(p.n)} gewinnt!`);
+  render(); $('msg').textContent = `Gratis-Karte: ${s.artist} – ${s.title} (${s.year})`;
+};
 
 function end(txt) {
   $('game').innerHTML = `<h1>🏆 ${txt}</h1><button onclick="location.reload()">Nochmal spielen</button>`;
@@ -150,10 +198,12 @@ function end(txt) {
 $('main').onclick = () => {
   if (G.st === 'ready') {
     if (!ctrl && !apiReady) { $('msg').textContent = 'Spotify lädt noch – gleich nochmal tippen.'; return; }
-    G.song = pick(); play('spotify:track:' + G.song.id); G.st = 'place'; render();
+    G.song = pick(); $('ga').value = $('gt').value = ''; ensure('spotify:track:' + G.song.id, true); G.st = 'place'; render();
   } else if (G.st === 'reveal') {
     const p = G.ps[G.cur];
     if (ctrl) ctrl.pause();
+    const ja = $('ja').checked, jt = $('jt').checked;
+    if (G.solo) p.pts += (ja ? 25 : 0) + (jt ? 25 : 0); else if (ja && jt) p.tok++;
     if (G.rev.ok) p.tl.splice(G.rev.idx, 0, G.song);
     if (G.solo) {
       if (++G.round >= G.rounds) return end(`${p.pts} Punkte`);
